@@ -1,54 +1,56 @@
-import os
 import torch
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
-# We import the setup directly from your team's file without changing it
-from infer_danger_qwen_eval import model, tokenizer, get_activation, hooks, dataset
+from datasets import load_dataset
+from infer_danger_qwen_eval import model, tokenizer, hooks, layer_outputs
 
-print("Starting Safety Probe Training Extension...")
+# WildGuardTrain for fitting, WildGuardTest for evaluation
+train_ds = load_dataset("allenai/wildguardmix", "wildguardtrain")["train"].filter(
+    lambda x: x["response"] is not None and x["response_harm_label"] is not None
+)
+test_ds = load_dataset("allenai/wildguardmix", "wildguardtest")["test"].filter(
+    lambda x: x["response"] is not None and x["response_harm_label"] is not None
+)
 
-X_activations = []
-y_labels = []
+TRAIN_SAMPLE = 200
+TEST_SAMPLE = 100
 
-# Filter for split data where choices differ (safe vs unsafe)
-evaluation_data = dataset["train"].filter(lambda x: x["is_response_0_safe"] != x["is_response_1_safe"]).select(range(50)) # Sample 50 to prototype
+train_data = train_ds.select(range(min(TRAIN_SAMPLE, len(train_ds))))
+test_data = test_ds.select(range(min(TEST_SAMPLE, len(test_ds))))
 
-# Clear out default test run tracker
-from infer_danger_qwen_eval import layer_outputs
-layer_outputs["layer_12"] = []
 
-for idx, item in enumerate(evaluation_data):
-    # Check layer 12 hidden states for response_0
-    prompt = item["prompt"] + " " + item["response_0"]
-    inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
-    
-    with torch.no_grad():
-        _ = model.generate(**inputs, max_new_tokens=1)
-        
-    if layer_outputs["layer_12"]:
-        # Grab the last token's activation vector
-        last_token_activation = layer_outputs["layer_12"][-1].numpy().flatten()
-        X_activations.append(last_token_activation)
-        y_labels.append(item["is_response_0_safe"])
-        
-    # Flush for next iteration
-    layer_outputs["layer_12"] = []
+def collect_activations(data):
+    X, y = [], []
+    for item in data:
+        layer_outputs["layer_12"] = []
 
-# Train a linear safety probe on top of layers
-X = np.array(X_activations)
-y = np.array(y_labels)
+        text = item["prompt"] + " " + item["response"]
+        inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
-if len(X) > 0:
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(X, y)
-    preds = clf.predict(X)
-    
-    print("\n Safety Probe Performance Report on Hidden States:")
-    print(classification_report(y, preds, target_names=["Unsafe", "Safe"]))
-else:
-    print("Failed to gather activations.")
+        with torch.no_grad():
+            model.generate(**inputs, max_new_tokens=1)
 
-# Clean up hooks cleanly
+        if layer_outputs["layer_12"]:
+            activation = layer_outputs["layer_12"][-1].numpy().flatten()
+            X.append(activation)
+            y.append(1 if item["response_harm_label"] == "harmful" else 0)
+
+    return np.array(X), np.array(y)
+
+
+print("Collecting train activations...")
+X_train, y_train = collect_activations(train_data)
+
+print("Collecting test activations...")
+X_test, y_test = collect_activations(test_data)
+
+clf = LogisticRegression(max_iter=1000)
+clf.fit(X_train, y_train)
+preds = clf.predict(X_test)
+
+print("\nSafety Probe — WildGuard test set results:")
+print(classification_report(y_test, preds, target_names=["Unharmful", "Harmful"]))
+
 for hook in hooks:
     hook.remove()
