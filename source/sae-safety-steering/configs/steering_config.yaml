@@ -1,0 +1,48 @@
+# ─── Model ────────────────────────────────────────────────────────────────────
+model:
+  name: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  local_path: "models/llama"          # where hf snapshot is cached
+  device: "cuda"
+  dtype: "bfloat16"
+
+# ─── SAE ──────────────────────────────────────────────────────────────────────
+sae:
+  name: "Llama-3.1-8B-Instruct-SAE-l19"
+  hf_repo: "Goodfire/Llama-3.1-8B-Instruct-SAE-l19"
+  local_path: "models/sae/Llama-3.1-8B-Instruct-SAE-l19.pth"
+  hook_layer: "model.layers.19"
+  expansion_factor: 16               # d_hidden = d_model * expansion_factor = 4096 * 16 = 65536
+
+# ─── Data ─────────────────────────────────────────────────────────────────────
+data:
+  hf_dataset: "allenai/wildguardmix"
+  train_path: "data/wildguard/train.jsonl"
+  test_path: "data/wildguard/test.jsonl"
+  val_fraction: 0.1                  # fraction of train set held out for steering threshold tuning
+  max_train_samples: 1500            # set null to use all 86k (slow)
+  max_test_samples: 1000
+
+# ─── Feature identification ───────────────────────────────────────────────────
+features:
+  # These are populated by steering_scripts/identify_features.py and saved to
+  # configs/features.yaml — do not edit by hand.
+  harmful_indices: []
+  unharmful_indices: []
+  refusal_indices: []
+  top_k: 20                          # how many top features to keep per class
+
+# ─── Steering ─────────────────────────────────────────────────────────────────
+steering:
+  # Thresholds and strengths are tuned on the val set by steering_scripts/tune_steering.py
+  harmful_activation_threshold: 1.0  # if max harmful feature activation > this, intervene
+  ablate_harmful: true               # zero out harmful features when intervening
+  boost_refusal: true                # also amplify refusal features
+  refusal_boost_strength: 8.0        # additive strength applied to refusal feature activations
+  unharmful_boost_strength: 4.0      # additive strength applied to unharmful feature activations
+
+# ─── Evaluation ───────────────────────────────────────────────────────────────
+eval:
+  results_dir: "results"
+  judge_model: "gpt-4o"              # GPT-4o used as fallback when GuardReasoner parse fails
+  guardreasoner_model: "yueliu1999/GuardReasoner-1B"
+  max_new_tokens: 128                # generation budget per prompt

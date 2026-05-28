@@ -1,0 +1,42 @@
+[project]
+name = "sae-safety-steering"
+version = "0.1.0"
+description = "Inference-time safety steering for Llama 3.1 8B via Goodfire SAE features"
+requires-python = ">=3.10"
+
+dependencies = [
+    # Core ML
+    "torch>=2.2.0",
+    "nnsight==0.3.0",
+
+    # HuggingFace
+    "transformers>=4.43.0",
+    "datasets>=2.20.0",
+    "huggingface_hub>=0.23.0",
+
+    # SAE / feature labelling
+    "goodfire>=0.3.0",
+
+    # Judge / eval
+    "openai>=1.30.0",
+
+    # Utilities
+    "pyyaml>=6.0",
+    "tqdm>=4.66.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+notebooks = [
+    "jupyter",
+    "matplotlib>=3.8.0",
+    "pandas>=2.2.0",
+    "seaborn>=0.13.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sae_steering"]
