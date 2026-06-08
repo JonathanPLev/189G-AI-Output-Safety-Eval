@@ -1,129 +1,79 @@
-"""
-steering_scripts/identify_features.py
-
-Reads results/train_activations.jsonl (produced by
-train_scripts/collect_activations.py) and identifies the SAE feature indices
-that are most discriminative for each class:
-  - harmful
-  - unharmful
-  - refusal
-
-Method: for each class C, compute
-    score(f) = mean_activation(f | label=C) - mean_activation(f | label≠C)
-Then take the top-k features by score.
-
-Writes the identified indices to configs/features.yaml so that
-steering_scripts/tune_steering.py and eval_scripts/ can load them.
-
-Usage:
-    python steering_scripts/identify_features.py
-    python steering_scripts/identify_features.py --top_k 30
-"""
-
 import argparse
 import json
 import os
 import sys
-from collections import defaultdict
 
 import numpy as np
-import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sae_steering.features import FeatureBank
 
+D_HIDDEN = 65536
 
-VALID_LABELS = ("harmful", "unharmful", "refusal")
 
-
-def load_activations(path: str) -> tuple[list[str], np.ndarray | list[dict]]:
-    """
-    Returns (labels, feature_matrix).
-
-    If rows contain dict mean_features (sparse mode), returns list of dicts.
-    If rows contain list mean_features (dense mode), returns np.ndarray.
-    """
-    labels = []
+def load_activations(path: str) -> tuple[list[str], np.ndarray]:
+    labels   = []
     features = []
+
     with open(path) as f:
         for line in f:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if row["judge_label"] not in VALID_LABELS:
+            label = row.get("prompt_harm_label") or row.get("judge_label", "")
+            if label not in ("harmful", "unharmful"):
                 continue
-            labels.append(row["judge_label"])
-            features.append(row["mean_features"])
+            labels.append(label)
 
-    is_sparse = isinstance(features[0], dict)
-    if not is_sparse:
-        return labels, np.array(features, dtype=np.float32)
-    return labels, features   # list of sparse dicts
+            feat_data = row.get("features") or row.get("mean_features")
+            if isinstance(feat_data, dict):
+                vec = np.zeros(D_HIDDEN, dtype=np.float32)
+                for idx, val in feat_data.items():
+                    vec[int(idx)] = float(val)
+            else:
+                vec = np.array(feat_data, dtype=np.float32)
+            features.append(vec)
 
-
-def dense_from_sparse(sparse_list: list[dict], d_hidden: int) -> np.ndarray:
-    mat = np.zeros((len(sparse_list), d_hidden), dtype=np.float32)
-    for i, d in enumerate(sparse_list):
-        for idx, val in d.items():
-            mat[i, int(idx)] = float(val)
-    return mat
-
-
-def top_k_differential(
-    feature_matrix: np.ndarray,
-    labels: list[str],
-    target_label: str,
-    top_k: int,
-) -> list[int]:
-    """
-    Return the top-k feature indices most activated for `target_label`
-    relative to all other labels.
-    """
-    mask_pos = np.array([l == target_label for l in labels])
-    mask_neg = ~mask_pos
-
-    mean_pos = feature_matrix[mask_pos].mean(axis=0)
-    mean_neg = feature_matrix[mask_neg].mean(axis=0)
-
-    scores = mean_pos - mean_neg
-    top_indices = np.argsort(scores)[::-1][:top_k].tolist()
-    return [int(i) for i in top_indices]
+    return labels, np.array(features, dtype=np.float32)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--activations", default="results/train_activations.jsonl")
     parser.add_argument("--out",         default="configs/features.yaml")
-    parser.add_argument("--top_k",       type=int, default=20)
-    parser.add_argument("--d_hidden",    type=int, default=65536,
-                        help="SAE hidden dim (4096 * 16 for l19)")
+    parser.add_argument("--top_k",       type=int, default=50)
     args = parser.parse_args()
 
     print(f"Loading activations from {args.activations} …")
     labels, features = load_activations(args.activations)
 
-    # convert sparse → dense if needed
-    if isinstance(features, list):
-        print("Detected sparse activations — converting to dense …")
-        features = dense_from_sparse(features, args.d_hidden)
+    n_harmful   = sum(1 for l in labels if l == "harmful")
+    n_unharmful = sum(1 for l in labels if l == "unharmful")
+    print(f"  {len(labels):,} samples  (harmful={n_harmful}, unharmful={n_unharmful})")
 
-    print(f"  {len(labels):,} samples, feature dim = {features.shape[1]:,}")
-    for lbl in VALID_LABELS:
-        n = sum(1 for l in labels if l == lbl)
-        print(f"  {lbl:12s}: {n:,} samples")
+    if n_harmful < 5 or n_unharmful < 5:
+        raise ValueError("Too few samples in one class — check your data.")
 
-    # ── differential feature ranking ─────────────────────────────────────────
-    bank = FeatureBank(
-        harmful_indices=top_k_differential(features, labels, "harmful",   args.top_k),
-        unharmful_indices=top_k_differential(features, labels, "unharmful", args.top_k),
-        refusal_indices=top_k_differential(features, labels, "refusal",   args.top_k),
-    )
+    mask_harmful   = np.array([l == "harmful"   for l in labels])
+    mask_unharmful = np.array([l == "unharmful" for l in labels])
+
+    mean_harmful   = features[mask_harmful].mean(axis=0)
+    mean_unharmful = features[mask_unharmful].mean(axis=0)
+
+    scores = mean_harmful - mean_unharmful
+
+    harmful_indices   = [int(i) for i in np.argsort(scores)[::-1][:args.top_k].tolist()]
+    unharmful_indices = [int(i) for i in np.argsort(scores)[:args.top_k].tolist()]
 
     print(f"\nTop-{args.top_k} features identified:")
-    print(f"  harmful   : {bank.harmful_indices[:5]} …")
-    print(f"  unharmful : {bank.unharmful_indices[:5]} …")
-    print(f"  refusal   : {bank.refusal_indices[:5]} …")
+    print(f"  harmful   : {harmful_indices[:5]} …")
+    print(f"  unharmful : {unharmful_indices[:5]} …")
+    print(f"  Top feature differential score: {float(scores[harmful_indices[0]]):.4f}")
 
+    bank = FeatureBank(
+        harmful_indices=harmful_indices,
+        unharmful_indices=unharmful_indices,
+    )
     bank.to_yaml(args.out)
     print(f"\nDone. Feature bank written → {args.out}")
 

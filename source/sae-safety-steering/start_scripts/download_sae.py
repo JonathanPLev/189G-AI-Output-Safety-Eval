@@ -1,19 +1,9 @@
-"""
-start_scripts/download_sae.py
-
-Downloads the Goodfire Llama-3.1-8B-Instruct SAE weights from HuggingFace
-and saves them to models/sae/.
-
-Usage:
-    python start_scripts/download_sae.py
-"""
-
 import os
 from huggingface_hub import hf_hub_download
 
-SAE_REPO   = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19"
-SAE_FILE   = "Llama-3.1-8B-Instruct-SAE-l19.pth"
-LOCAL_DIR  = "models/sae"
+SAE_REPO  = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19"
+SAE_FILE  = "Llama-3.1-8B-Instruct-SAE-l19.pth"
+LOCAL_DIR = "models/sae"
 
 
 def main():
